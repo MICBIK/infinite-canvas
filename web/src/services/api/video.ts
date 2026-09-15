@@ -4,7 +4,7 @@ import { nanoid } from "nanoid";
 import i18n from "@/i18n";
 import { dataUrlToFile, readFileAsDataUrl } from "@/lib/image-utils";
 import { clampVideoSeconds, computeVideoSize, inferVideoRatio } from "@/lib/media-size";
-import { applyReferenceResolutionCap, clampSecondsToSpec, effectiveDurationSpec, normalizeResolutionToEnum, plainModelName, resolveVideoModelCapability, type VideoModelCapability } from "@/lib/video-capabilities";
+import { applyReferenceResolutionCap, clampSecondsToSpec, effectiveDurationSpec, effectiveResolutionOptions, normalizeResolutionToEnum, plainModelName, resolveVideoModelCapability, type VideoModelCapability } from "@/lib/video-capabilities";
 import { uploadMaterial } from "@/services/api/materials";
 import { fetchResolutionEnum } from "@/services/api/site-pricing";
 import { getMediaBlob, resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
@@ -192,7 +192,8 @@ async function createGatedVideoTask(config: AiConfig, model: string, capability:
     enforceMaterialLimits(capability, references.length, videos.length, audios.length);
 
     const pricingEnum = await fetchResolutionEnum(config.baseUrl, plainModelName(model));
-    const resolutionEnum = capability.resolutions === null ? null : pricingEnum ?? capability.resolutions;
+    // 提交侧与面板共用同一套解析：pricing 枚举与静态表取交集，静态 null 走 fixedResolution。
+    const resolutionEnum = effectiveResolutionOptions(capability, pricingEnum);
     // 交叉约束在提交侧兜底：挂参考图时即使本地状态残留高档位也强制压回上限。
     const resolutionOptions = applyReferenceResolutionCap(resolutionEnum, capability, references.length > 0);
     // 固定分辨率模型隐藏选择器，但插件要求负载仍携带该档位。
@@ -228,7 +229,7 @@ async function createGatedVideoTask(config: AiConfig, model: string, capability:
         }
     }
     try {
-        const created = unwrapVideoResponse((await axios.post<ApiVideoResponse>(aiApiUrl(config, "/videos"), body, { headers: aiHeaders(config, "application/json"), signal: options?.signal })).data);
+        const created = unwrapVideoResponse((await axios.post<ApiVideoResponse>(aiApiUrl(config, "/videos"), body, { headers: aiHeaders(config, "application/json"), signal: options?.signal, timeout: 60000 })).data);
         if (!created.id) throw new Error(apiText("noVideoTaskId"));
         return { id: created.id, provider: "openai", model };
     } catch (error) {

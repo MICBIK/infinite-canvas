@@ -40,12 +40,13 @@ export async function uploadMaterial(
     const presignData = await requestMaterial<MaterialPresignData>(() => axios.post<MaterialApiEnvelope<MaterialPresignData>>(
         siteApiUrl(config.baseUrl, "/api/user/materials/presign"),
         { contentType, sizeBytes: file.size },
-        { headers, signal },
+        { headers, signal, timeout: 30000 },
     ));
     try {
         await axios.put(presignData.putUrl, file, {
             headers: { "Content-Type": contentType },
             signal,
+            timeout: 600000,
             onUploadProgress: (event) => {
                 if (!onProgress) return;
                 const total = event.total || file.size;
@@ -61,7 +62,7 @@ export async function uploadMaterial(
         () => axios.post<MaterialApiEnvelope<{ url: string; expiresAt: number }>>(
             siteApiUrl(config.baseUrl, "/api/user/materials/confirm"),
             { objectKey: presignData.objectKey, sizeBytes: file.size, contentType },
-            { headers, signal },
+            { headers, signal, timeout: 30000 },
         ),
     );
     return { url: confirmData.url, expiresAt: confirmData.expiresAt };

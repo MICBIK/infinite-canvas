@@ -47,7 +47,8 @@ const range = (min: number, max: number, def: number): VideoDurationSpec => ({ m
 const discrete = (values: number[], def: number): VideoDurationSpec => ({ mode: "discrete", values, default: def });
 
 function seedance(resolutions: string[] | null, duration: VideoDurationSpec, materials: VideoMaterialLimits, durationByResolution?: VideoModelCapability["durationByResolution"]): VideoModelCapability {
-    return { payload: "seedance", resolutions, fixedResolution: resolutions && resolutions.length === 1 ? resolutions[0] : undefined, duration, materials, durationByResolution, aspectRatios: VIDEO_ASPECT_RATIOS };
+    // 固定分辨率模型（resolutions 为 null）的档位仍是插件必填字段，负载固定带 720p。
+    return { payload: "seedance", resolutions, fixedResolution: resolutions ? undefined : "720p", duration, materials, durationByResolution, aspectRatios: VIDEO_ASPECT_RATIOS };
 }
 
 /** 剥离渠道前缀（"ch1::model" → "model"）。 */

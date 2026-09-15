@@ -6,7 +6,7 @@ import i18n from "@/i18n";
 import { ImageSettingsTheme } from "@/components/image-settings-panel";
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import { clampVideoSeconds, computeVideoSize, inferVideoRatio, parseVideoResolution, readVideoDimensions, VIDEO_SECONDS_MAX, VIDEO_SECONDS_MIN, videoRatioOptions } from "@/lib/media-size";
-import { effectiveDurationSpec, parseResolutionNumber, type VideoModelCapability } from "@/lib/video-capabilities";
+import { clampSecondsToSpec, effectiveDurationSpec, parseResolutionNumber, type VideoModelCapability } from "@/lib/video-capabilities";
 import { type AiConfig } from "@/stores/use-config-store";
 
 const resolutionOptions = [
@@ -39,7 +39,6 @@ type VideoSettingsPanelProps = {
 
 export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5", capability, resolutionEnum, referenceCount = 0 }: VideoSettingsPanelProps) {
     const { t } = useTranslation();
-    const seconds = Number(clampVideoSeconds(config.videoSeconds || "6"));
     const videoMode = normalizeVideoModeValue(config.videoMode);
     const resolution = parseVideoResolution(config.vquality);
     const selectedRatio = inferVideoRatio(config.size || "auto");
@@ -57,6 +56,12 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
     const currentEnumValue = gatedEnum?.find((item) => enumValueOf(item) === Number(resolution)) || null;
     const durationSpec = capability ? effectiveDurationSpec(capability, currentEnumValue || "") : null;
     const rangeSpec = durationSpec?.mode === "range" ? durationSpec : null;
+    // 门控模型按模型窗口钳制（grok 允许 1-3 秒，不受全局 4 秒下限影响）；通用路径保持全局钳制。
+    const seconds = rangeSpec
+        ? clampSecondsToSpec(durationSpec!, Number(config.videoSeconds))
+        : Number(clampVideoSeconds(config.videoSeconds || "6"));
+    const secondsMin = rangeSpec ? rangeSpec.min : VIDEO_SECONDS_MIN;
+    const secondsMax = rangeSpec ? rangeSpec.max : VIDEO_SECONDS_MAX;
     const capNumber = capability?.referenceResolutionCap ? enumValueOf(capability.referenceResolutionCap) : 0;
     const cappedEnum = capability && gatedEnum && referenceCount > 0 && capNumber > 0
         ? gatedEnum.filter((item) => enumValueOf(item) <= capNumber)
@@ -116,7 +121,7 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                                     onClick={() => (capability ? onConfigChange("size", item.value) : applySize(resolution, item.value))}
                                 >
                                     {capability ? null : <SizePreview width={item.width} height={item.height} color={theme.node.text} />}
-                                    <span>{item.value}</span>
+                                    <span>{item.value === "auto" ? t("settingsPanels.common.auto") : item.value}</span>
                                 </button>
                             ))}
                         </div>
@@ -135,8 +140,8 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 ) : (
                     <SettingGroup title={t("settingsPanels.video.seconds")} color={theme.node.muted}>
                         <div className="flex items-center gap-3" onMouseDown={(event) => event.stopPropagation()}>
-                            <Slider className="min-w-0 flex-1" min={rangeSpec ? rangeSpec.min : VIDEO_SECONDS_MIN} max={rangeSpec ? rangeSpec.max : VIDEO_SECONDS_MAX} step={1} value={Math.min(seconds, rangeSpec ? rangeSpec.max : VIDEO_SECONDS_MAX)} onChange={(value) => onConfigChange("videoSeconds", String(Array.isArray(value) ? value[0] : value))} />
-                            <SecondsInput value={seconds} theme={theme} onCommit={(value) => onConfigChange("videoSeconds", String(value))} />
+                            <Slider className="min-w-0 flex-1" min={secondsMin} max={secondsMax} step={1} value={seconds} onChange={(value) => onConfigChange("videoSeconds", String(Array.isArray(value) ? value[0] : value))} />
+                            <SecondsInput value={seconds} theme={theme} min={secondsMin} max={secondsMax} onCommit={(value) => onConfigChange("videoSeconds", String(value))} />
                             <span className="shrink-0 text-sm" style={{ color: theme.node.muted }}>s</span>
                         </div>
                     </SettingGroup>
@@ -229,9 +234,9 @@ function ResolutionInput({ value, theme, onChange }: { value: string; theme: Can
     );
 }
 
-function SecondsInput({ value, theme, onCommit }: { value: number; theme: CanvasTheme; onCommit: (value: number) => void }) {
+function SecondsInput({ value, theme, min = VIDEO_SECONDS_MIN, max = VIDEO_SECONDS_MAX, onCommit }: { value: number; theme: CanvasTheme; min?: number; max?: number; onCommit: (value: number) => void }) {
     const commit = (input: HTMLInputElement) => {
-        const next = Number(clampVideoSeconds(input.value));
+        const next = Math.min(max, Math.max(min, Math.round(Number(input.value) || value)));
         input.value = String(next);
         onCommit(next);
     };
@@ -240,8 +245,8 @@ function SecondsInput({ value, theme, onCommit }: { value: number; theme: Canvas
         <label className="flex h-9 w-[68px] shrink-0 overflow-hidden rounded-xl text-sm" style={{ background: theme.node.fill, color: theme.node.text }}>
             <input
                 type="number"
-                min={VIDEO_SECONDS_MIN}
-                max={VIDEO_SECONDS_MAX}
+                min={min}
+                max={max}
                 className="min-w-0 flex-1 bg-transparent px-2 text-center outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                 defaultValue={value}
                 key={value}
