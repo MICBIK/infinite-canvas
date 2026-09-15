@@ -836,12 +836,21 @@ function buildVideoConfig(config: AiConfig, model: string): AiConfig {
         model,
         videoModel: model,
         size: normalizeVideoSize(config.size),
-        videoSeconds: normalizeVideoSeconds(config.videoSeconds),
+        // 门控模型的时长窗口在提交路径按模型规格钳制；这里只做格式归一，
+        // 不套全局 4 秒下限（grok 等模型允许 1-3 秒）。
+        videoSeconds: normalizeVideoSecondsLoose(config.videoSeconds),
         vquality: normalizeResolution(config.vquality),
         videoGenerateAudio: String(boolConfig(config.videoGenerateAudio, true)),
         videoWatermark: String(boolConfig(config.videoWatermark, false)),
         videoMode: config.videoMode === "reference" ? "reference" : "frames",
     };
+}
+
+function normalizeVideoSecondsLoose(value: string) {
+    if (String(value).trim() === "-1") return "-1";
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return clampVideoSeconds(value);
+    return String(Math.round(parsed));
 }
 
 function normalizeVideoSeconds(value: string) {
