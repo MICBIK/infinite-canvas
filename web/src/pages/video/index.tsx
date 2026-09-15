@@ -105,7 +105,7 @@ export default function VideoPage() {
     const agentTaskIdRef = useRef<string | undefined>(undefined);
 
     const model = effectiveConfig.videoModel || effectiveConfig.model;
-    const modelCapability = resolveVideoModelCapability(model);
+    const modelCapability = resolveVideoModelCapability(model.includes("::") ? model.slice(model.indexOf("::") + 2) : model);
     const canGenerate = Boolean(prompt.trim());
 
     // 门控模型：参考图经站点素材通道直传换成交互公开读 URL，失败可重试。
@@ -553,20 +553,21 @@ export default function VideoPage() {
 function GenerationSettings({ config, model, updateConfig, openConfigDialog, referenceCount }: { config: AiConfig; model: string; updateConfig: UpdateAiConfig; openConfigDialog: (shouldPromptContinue?: boolean) => void; referenceCount: number }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
-    const capability = resolveVideoModelCapability(model);
+    const plainModel = model.includes("::") ? model.slice(model.indexOf("::") + 2) : model;
+    const capability = resolveVideoModelCapability(plainModel);
     const [pricingEnum, setPricingEnum] = useState<string[] | null | undefined>(undefined);
 
     useEffect(() => {
         if (!capability) return;
         let alive = true;
         const requestConfig = resolveModelRequestConfig(config, model);
-        void fetchResolutionEnum(requestConfig.baseUrl, requestConfig.apiKey, model).then((result) => {
+        void fetchResolutionEnum(requestConfig.baseUrl, requestConfig.apiKey, plainModel).then((result) => {
             if (alive) setPricingEnum(result);
         });
         return () => {
             alive = false;
         };
-    }, [capability, config, model]);
+    }, [capability, config, model, plainModel]);
 
     const resolutionEnum = capability ? effectiveResolutionOptions(capability, pricingEnum) : undefined;
 

@@ -147,9 +147,10 @@ export function applyReferenceResolutionCap(options: string[] | null, capability
 }
 
 export function parseResolutionNumber(value: string): number | null {
-    const match = value.trim().match(/^(\d+)\s*p$/i);
+    const trimmed = value.trim();
+    const match = trimmed.match(/^(\d+)\s*p?$/i);
     if (match) return Number(match[1]);
-    if (/^4k$/i.test(value.trim())) return 2160;
+    if (/^4k$/i.test(trimmed)) return 2160;
     return null;
 }
 
