@@ -27,6 +27,8 @@ export interface VideoModelCapability {
     payload: VideoPayloadStyle;
     /** 静态分辨率枚举；null 表示固定分辨率模型（隐藏选择器）。 */
     resolutions: string[] | null;
+    /** 固定分辨率模型的提交档位：选择器隐藏，但负载仍必须携带。 */
+    fixedResolution?: string;
     duration: VideoDurationSpec;
     /** 分辨率不同时时长窗口不同（如 sd-mini）。 */
     durationByResolution?: Record<string, { min: number; max: number; default: number }>;
@@ -45,7 +47,7 @@ const range = (min: number, max: number, def: number): VideoDurationSpec => ({ m
 const discrete = (values: number[], def: number): VideoDurationSpec => ({ mode: "discrete", values, default: def });
 
 function seedance(resolutions: string[] | null, duration: VideoDurationSpec, materials: VideoMaterialLimits, durationByResolution?: VideoModelCapability["durationByResolution"]): VideoModelCapability {
-    return { payload: "seedance", resolutions, duration, materials, durationByResolution, aspectRatios: VIDEO_ASPECT_RATIOS };
+    return { payload: "seedance", resolutions, fixedResolution: resolutions && resolutions.length === 1 ? resolutions[0] : undefined, duration, materials, durationByResolution, aspectRatios: VIDEO_ASPECT_RATIOS };
 }
 
 /** 剥离渠道前缀（"ch1::model" → "model"）。 */
@@ -121,13 +123,16 @@ export function resolveVideoModelCapability(model: string): VideoModelCapability
 
 /**
  * 计算实际可用的分辨率选项。
- * pricing 枚举存在时覆盖静态表；pricing schema 为空（固定分辨率模型）
- * 返回 null（隐藏选择器）；无 pricing 数据时回退静态表。
+ * 「隐藏选择器」只由静态表的 null（固定分辨率/档位在模型名的模型）决定，
+ * 负载此时改用 fixedResolution；pricing 枚举存在时与静态表取交集
+ * （pricing 的枚举是插件级而非模型级）；pricing 缺失或为空 schema 时回退静态表。
  */
 export function effectiveResolutionOptions(capability: VideoModelCapability, pricingEnum: string[] | null | undefined): string[] | null {
-    if (pricingEnum === undefined) return capability.resolutions;
-    if (pricingEnum === null) return null;
-    return pricingEnum;
+    if (!capability.resolutions) return null;
+    if (!Array.isArray(pricingEnum) || pricingEnum.length === 0) return capability.resolutions;
+    const staticLower = capability.resolutions.map((item) => item.toLowerCase());
+    const intersected = pricingEnum.filter((item) => staticLower.includes(item.toLowerCase()));
+    return intersected.length > 0 ? intersected : capability.resolutions;
 }
 
 /** 当前分辨率下的时长规格（sd-mini 这类按分辨率区分窗口的模型）。 */

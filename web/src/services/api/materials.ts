@@ -98,6 +98,8 @@ export function materialErrorMessage(code: string | undefined): string {
             return i18n.t("apiErrors.materialUploadFailed");
         case "materials_invalid_request":
             return i18n.t("apiErrors.materialInvalidRequest");
+        case "materials_internal_error":
+            return i18n.t("apiErrors.materialUploadFailed");
         default:
             return "";
     }

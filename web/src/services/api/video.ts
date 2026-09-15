@@ -195,7 +195,8 @@ async function createGatedVideoTask(config: AiConfig, model: string, capability:
     const resolutionEnum = capability.resolutions === null ? null : pricingEnum ?? capability.resolutions;
     // 交叉约束在提交侧兜底：挂参考图时即使本地状态残留高档位也强制压回上限。
     const resolutionOptions = applyReferenceResolutionCap(resolutionEnum, capability, references.length > 0);
-    const resolution = resolutionOptions ? normalizeResolutionToEnum(config.vquality, resolutionOptions) : null;
+    // 固定分辨率模型隐藏选择器，但插件要求负载仍携带该档位。
+    const resolution = resolutionOptions ? normalizeResolutionToEnum(config.vquality, resolutionOptions) : capability.fixedResolution ?? null;
     const durationSpec = effectiveDurationSpec(capability, resolution || "");
     // 模型时长窗口优先于全局秒数下限（grok 允许 1-3 秒，全局钳制会把它抬到 4）。
     const seconds = clampSecondsToSpec(durationSpec, Number(config.videoSeconds) || durationSpec.default);
