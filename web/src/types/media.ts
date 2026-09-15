@@ -8,6 +8,8 @@ export type ReferenceVideo = {
     width?: number;
     height?: number;
     durationMs?: number;
+    /** 素材通道上传后的公开读 URL。 */
+    remoteUrl?: string;
 };
 
 export type ReferenceAudio = {
@@ -17,4 +19,6 @@ export type ReferenceAudio = {
     url: string;
     storageKey?: string;
     durationMs?: number;
+    /** 素材通道上传后的公开读 URL。 */
+    remoteUrl?: string;
 };

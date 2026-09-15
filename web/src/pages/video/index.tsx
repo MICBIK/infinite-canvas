@@ -12,13 +12,16 @@ import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { VideoSettingsPanel, normalizeVideoResolutionValue, normalizeVideoSizeValue, videoModeLabel, videoSizeLabel } from "@/components/video-settings-panel";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { clampVideoSeconds } from "@/lib/media-size";
+import { effectiveResolutionOptions, resolveVideoModelCapability } from "@/lib/video-capabilities";
 import { formatBytes, formatDuration } from "@/lib/image-utils";
 import { deleteStoredMedia, resolveMediaUrl } from "@/services/file-storage";
 import { resolveImageUrl, uploadImage } from "@/services/image-storage";
+import { uploadMaterial } from "@/services/api/materials";
+import { fetchResolutionEnum } from "@/services/api/site-pricing";
 import { createVideoGenerationTask, pollVideoGenerationTask, storeGeneratedVideo, type VideoGenerationTask } from "@/services/api/video";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
-import { boolConfig, modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { boolConfig, modelOptionLabel, resolveModelRequestConfig, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { ReferenceImage } from "@/types/image";
 import i18n from "@/i18n";
@@ -102,7 +105,29 @@ export default function VideoPage() {
     const agentTaskIdRef = useRef<string | undefined>(undefined);
 
     const model = effectiveConfig.videoModel || effectiveConfig.model;
+    const modelCapability = resolveVideoModelCapability(model);
     const canGenerate = Boolean(prompt.trim());
+
+    // 门控模型：参考图经站点素材通道直传换成交互公开读 URL，失败可重试。
+    const uploadReferenceToMaterialChannel = async (reference: ReferenceImage) => {
+        const requestConfig = resolveModelRequestConfig(effectiveConfig, model);
+        setReferences((value) => value.map((item) => (item.id === reference.id ? { ...item, upload: { state: "uploading", progress: 0 } } : item)));
+        try {
+            const blob = await (await fetch(reference.dataUrl)).blob();
+            const result = await uploadMaterial(requestConfig, blob, reference.type || blob.type || "image/png", (percent) => {
+                setReferences((value) => value.map((item) => (item.id === reference.id && item.upload?.state === "uploading" ? { ...item, upload: { state: "uploading", progress: percent } } : item)));
+            });
+            setReferences((value) => value.map((item) => (item.id === reference.id ? { ...item, remoteUrl: result.url, upload: { state: "ready", progress: 100 } } : item)));
+        } catch (error) {
+            setReferences((value) => value.map((item) => (item.id === reference.id ? { ...item, upload: { state: "error", progress: 0 } } : item)));
+            message.error(error instanceof Error ? error.message : t("apiErrors.materialUploadFailed"));
+        }
+    };
+
+    const queueMaterialUploads = (newReferences: ReferenceImage[]) => {
+        if (!modelCapability) return;
+        newReferences.forEach((reference) => void uploadReferenceToMaterialChannel(reference));
+    };
 
     useEffect(() => {
         if (!running || !startedAt) return;
@@ -126,6 +151,7 @@ export default function VideoPage() {
             }),
         );
         setReferences((value) => [...value, ...nextReferences].slice(0, 7));
+        queueMaterialUploads(nextReferences);
     };
 
     const handleReferenceDragEnter = (event: DragEvent<HTMLDivElement>) => {
@@ -162,6 +188,7 @@ export default function VideoPage() {
                 }),
             );
             setReferences((value) => [...value, ...nextReferences].slice(0, 7));
+            queueMaterialUploads(nextReferences);
             message.success(t("videoWorkbench.clipboardAdded", { count: nextReferences.length }));
         } catch {
             message.error(t("videoWorkbench.clipboardEmpty"));
@@ -430,6 +457,20 @@ export default function VideoPage() {
                                     {references.map((item, index) => (
                                         <div key={item.id} className="group relative size-20 shrink-0 overflow-hidden rounded-md border border-stone-200 dark:border-stone-800">
                                             <img src={item.dataUrl} alt={item.name} className="size-full object-cover" />
+                                            {item.upload && item.upload.state !== "ready" ? (
+                                                <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-black/55 text-[10px] font-medium text-white">
+                                                    {item.upload.state === "uploading" ? (
+                                                        <>
+                                                            <LoaderCircle className="size-4 animate-spin" />
+                                                            <span>{item.upload.progress}%</span>
+                                                        </>
+                                                    ) : (
+                                                        <button type="button" className="rounded bg-white/15 px-2 py-0.5 hover:bg-white/25" onClick={() => void uploadReferenceToMaterialChannel(item)}>
+                                                            {t("videoWorkbench.materialRetry")}
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            ) : null}
                                             <span className="absolute left-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">{index + 1}</span>
                                             <ReferenceOrderButtons index={index} total={references.length} onMove={(offset) => setReferences((value) => moveListItem(value, index, offset))} />
                                             <button type="button" className="absolute right-1 top-1 hidden size-6 items-center justify-center rounded bg-black/60 text-white group-hover:flex" onClick={() => setReferences((value) => value.filter((ref) => ref.id !== item.id))} aria-label={t("videoWorkbench.removeImage")}>
@@ -439,6 +480,7 @@ export default function VideoPage() {
                                     ))}
                                     {!references.length ? <div className="flex min-w-full items-center justify-center text-sm text-stone-500">{referenceDragTarget ? t("videoWorkbench.dropReferences") : t("videoWorkbench.noImages")}</div> : null}
                                 </div>
+                                {modelCapability ? <div className="text-xs text-stone-400 dark:text-stone-500">{t("videoWorkbench.materialsPrivacy")}</div> : null}
                             </div>
 
                             <div className="flex items-center justify-between rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm dark:border-stone-800 dark:bg-stone-900 sm:hidden">
@@ -451,7 +493,7 @@ export default function VideoPage() {
                             </div>
 
                             <div className="hidden gap-4 sm:grid sm:grid-cols-2">
-                                <GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} />
+                                <GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} referenceCount={references.length} />
                             </div>
                         </div>
 
@@ -496,7 +538,7 @@ export default function VideoPage() {
             </Drawer>
             <Drawer title={t("workbench.settings")} placement="bottom" height="82vh" open={settingsOpen} onClose={() => setSettingsOpen(false)}>
                 <div className="grid grid-cols-2 gap-3 pb-4">
-                    <GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} />
+                    <GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} referenceCount={references.length} />
                 </div>
             </Drawer>
             <PromptSelectDialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen} onSelect={setPrompt} />
@@ -508,9 +550,25 @@ export default function VideoPage() {
     );
 }
 
-function GenerationSettings({ config, model, updateConfig, openConfigDialog }: { config: AiConfig; model: string; updateConfig: UpdateAiConfig; openConfigDialog: (shouldPromptContinue?: boolean) => void }) {
+function GenerationSettings({ config, model, updateConfig, openConfigDialog, referenceCount }: { config: AiConfig; model: string; updateConfig: UpdateAiConfig; openConfigDialog: (shouldPromptContinue?: boolean) => void; referenceCount: number }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
+    const capability = resolveVideoModelCapability(model);
+    const [pricingEnum, setPricingEnum] = useState<string[] | null | undefined>(undefined);
+
+    useEffect(() => {
+        if (!capability) return;
+        let alive = true;
+        const requestConfig = resolveModelRequestConfig(config, model);
+        void fetchResolutionEnum(requestConfig.baseUrl, requestConfig.apiKey, model).then((result) => {
+            if (alive) setPricingEnum(result);
+        });
+        return () => {
+            alive = false;
+        };
+    }, [capability, config, model]);
+
+    const resolutionEnum = capability ? effectiveResolutionOptions(capability, pricingEnum) : undefined;
 
     return (
         <>
@@ -519,7 +577,7 @@ function GenerationSettings({ config, model, updateConfig, openConfigDialog }: {
                 <ModelPicker config={config} value={model} onChange={(value) => updateConfig("videoModel", value)} capability="video" fullWidth onMissingConfig={() => openConfigDialog(false)} />
             </label>
             <div className="col-span-2">
-                <VideoSettingsPanel config={config} onConfigChange={(key, value) => updateConfig(key, value)} theme={theme} showTitle={false} className="space-y-4" />
+                <VideoSettingsPanel config={config} onConfigChange={(key, value) => updateConfig(key, value)} theme={theme} showTitle={false} className="space-y-4" capability={capability} resolutionEnum={resolutionEnum} referenceCount={referenceCount} />
             </div>
         </>
     );

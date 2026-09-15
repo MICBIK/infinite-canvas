@@ -4,6 +4,9 @@ import { nanoid } from "nanoid";
 import i18n from "@/i18n";
 import { dataUrlToFile, readFileAsDataUrl } from "@/lib/image-utils";
 import { clampVideoSeconds, computeVideoSize, inferVideoRatio } from "@/lib/media-size";
+import { clampSecondsToSpec, effectiveDurationSpec, normalizeResolutionToEnum, resolveVideoModelCapability, type VideoModelCapability } from "@/lib/video-capabilities";
+import { uploadMaterial } from "@/services/api/materials";
+import { fetchResolutionEnum } from "@/services/api/site-pricing";
 import { getMediaBlob, resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
 import { boolConfig, buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
@@ -75,6 +78,8 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     const script = resolveModelScript(config, selectedModel);
     if (script) return createPluginVideoTask(requestConfig, selectedModel, script, prompt, references, options);
     assertVideoConfig(requestConfig, requestConfig.model);
+    const capability = resolveVideoModelCapability(plainModelName(selectedModel));
+    if (capability) return createGatedVideoTask(requestConfig, selectedModel, capability, prompt, references, options);
     if (requestConfig.apiFormat === "gemini") return createGeminiVideoTask(requestConfig, selectedModel, prompt, references, options);
     return createOpenAIVideoTask(requestConfig, selectedModel, prompt, references, options);
 }
@@ -177,8 +182,86 @@ async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: st
     }
 }
 
-async function pollOpenAIVideoTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
+function plainModelName(model: string) {
+    return model.includes("::") ? model.slice(model.indexOf("::") + 2) : model;
+}
+
+/**
+ * 门控模型的统一提交路径：素材一律先经站点素材通道换成交互公开读 URL，
+ * 再以该模型族的 JSON 负载提交（不再走 multipart/data-URI）。
+ */
+async function createGatedVideoTask(config: AiConfig, model: string, capability: VideoModelCapability, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
+    const videos = options?.videos || [];
+    const audios = options?.audios || [];
+    enforceMaterialLimits(capability, references.length, videos.length, audios.length);
+
+    const pricingEnum = await fetchResolutionEnum(config.baseUrl, config.apiKey, plainModelName(model));
+    const resolutionEnum = capability.resolutions === null ? null : pricingEnum ?? capability.resolutions;
+    const resolution = resolutionEnum ? normalizeResolutionToEnum(config.vquality, resolutionEnum) : null;
+    const durationSpec = effectiveDurationSpec(capability, resolution || "");
+    const seconds = clampSecondsToSpec(durationSpec, Number(normalizeVideoSeconds(config.videoSeconds)) || durationSpec.default);
+    const ratio = videoAspectRatio(config.size);
+    const aspectRatio = capability.aspectRatios.includes(ratio) ? ratio : undefined;
+
+    const images = await Promise.all(references.slice(0, capability.singleImageMode ? 1 : capability.materials.images).map((image) => ensureMaterialUrl(config, image, options)));
+    const videoUrls = await Promise.all(videos.slice(0, capability.materials.videos).map((video) => ensureMaterialUrlForMedia(config, video, "ref.mp4", "invalidReferenceVideo", options)));
+    const audioUrls = await Promise.all(audios.slice(0, capability.materials.audios).map((audio) => ensureMaterialUrlForMedia(config, audio, "ref.mp3", "invalidReferenceAudio", options)));
+
+    const body: Record<string, unknown> = { model: plainModelName(model), prompt };
+    if (capability.payload === "sora") {
+        body.seconds = seconds;
+        if (images[0]) body.input_reference = images[0];
+    } else {
+        body.duration = seconds;
+        if (resolution) body.resolution = resolution;
+        if (aspectRatio) body.aspect_ratio = aspectRatio;
+        if (capability.payload === "grok") {
+            if (images[0]) {
+                if (capability.singleImageMode) body.image = images[0];
+                else body.reference_images = images.map((url) => ({ url }));
+            }
+            body.generate_audio = boolConfig(config.videoGenerateAudio, true);
+        } else {
+            if (images.length) body.images = images;
+            if (videoUrls.length) body.videos = videoUrls;
+            if (audioUrls.length) body.audios = audioUrls;
+        }
+    }
     try {
+        const created = unwrapVideoResponse((await axios.post<ApiVideoResponse>(aiApiUrl(config, "/videos"), body, { headers: aiHeaders(config, "application/json"), signal: options?.signal })).data);
+        if (!created.id) throw new Error(apiText("noVideoTaskId"));
+        return { id: created.id, provider: "openai", model };
+    } catch (error) {
+        throw new Error(readAxiosError(error, apiText("videoTaskCreateFailed")));
+    }
+}
+
+function enforceMaterialLimits(capability: VideoModelCapability, images: number, videos: number, audios: number) {
+    if (images > capability.materials.images || videos > capability.materials.videos || audios > capability.materials.audios) {
+        throw new Error(apiText("materialLimitExceeded"));
+    }
+    const total = capability.materials.total;
+    if (total !== undefined && images + videos + audios > total) {
+        throw new Error(apiText("materialLimitExceeded"));
+    }
+}
+
+/** 参考图缺公开 URL 时（画布节点等场景）在提交前即时上传补齐。 */
+async function ensureMaterialUrl(config: AiConfig, image: ReferenceImage, options?: RequestOptions) {
+    if (image.remoteUrl) return image.remoteUrl;
+    const file = dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) });
+    const result = await uploadMaterial(config, file, file.type || "image/png", undefined, options?.signal);
+    return result.url;
+}
+
+async function ensureMaterialUrlForMedia(config: AiConfig, item: { name: string; type?: string; url?: string; storageKey?: string; remoteUrl?: string }, fallbackName: string, errorKey: "invalidReferenceVideo" | "invalidReferenceAudio", options?: RequestOptions) {
+    if (item.remoteUrl) return item.remoteUrl;
+    const file = await referenceMediaToFile(item, fallbackName, errorKey, options);
+    const result = await uploadMaterial(config, file, file.type || "application/octet-stream", undefined, options?.signal);
+    return result.url;
+}
+
+async function pollOpenAIVideoTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {    try {
         const video = unwrapVideoResponse((await axios.get<ApiVideoResponse>(aiApiUrl(config, `/videos/${task.id}`), { headers: aiHeaders(config), signal: options?.signal })).data);
         const url = videoResultUrl(video);
         if (url) return { status: "completed", result: await videoResultFromUrl(url, options) };
