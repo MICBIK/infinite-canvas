@@ -39,13 +39,18 @@ export interface VideoModelCapability {
     aspectRatios: string[];
 }
 
-export const GROK_ASPECT_RATIOS = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"];
+export const VIDEO_ASPECT_RATIOS = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"];
 
 const range = (min: number, max: number, def: number): VideoDurationSpec => ({ mode: "range", min, max, default: def });
 const discrete = (values: number[], def: number): VideoDurationSpec => ({ mode: "discrete", values, default: def });
 
-function seedance(resolutions: string[] | null, duration: VideoDurationSpec, materials: VideoMaterialLimits): VideoModelCapability {
-    return { payload: "seedance", resolutions, duration, materials, aspectRatios: GROK_ASPECT_RATIOS };
+function seedance(resolutions: string[] | null, duration: VideoDurationSpec, materials: VideoMaterialLimits, durationByResolution?: VideoModelCapability["durationByResolution"]): VideoModelCapability {
+    return { payload: "seedance", resolutions, duration, materials, durationByResolution, aspectRatios: VIDEO_ASPECT_RATIOS };
+}
+
+/** 剥离渠道前缀（"ch1::model" → "model"）。 */
+export function plainModelName(model: string) {
+    return model.includes("::") ? model.slice(model.indexOf("::") + 2) : model;
 }
 
 export const videoModelCapabilities: Record<string, VideoModelCapability> = {
@@ -56,7 +61,7 @@ export const videoModelCapabilities: Record<string, VideoModelCapability> = {
         duration: range(1, 15, 6),
         materials: { images: 1, videos: 0, audios: 0 },
         singleImageMode: true,
-        aspectRatios: GROK_ASPECT_RATIOS,
+        aspectRatios: VIDEO_ASPECT_RATIOS,
     },
     "grok-imagine-video-1.5": {
         payload: "grok",
@@ -64,7 +69,7 @@ export const videoModelCapabilities: Record<string, VideoModelCapability> = {
         duration: range(1, 15, 6),
         materials: { images: 7, videos: 0, audios: 0 },
         referenceResolutionCap: "720p",
-        aspectRatios: GROK_ASPECT_RATIOS,
+        aspectRatios: VIDEO_ASPECT_RATIOS,
     },
 
     // ── seedance / minimax（按秒计价档）──
@@ -91,6 +96,8 @@ export const videoModelCapabilities: Record<string, VideoModelCapability> = {
         ["480p", "720p"],
         range(4, 15, 10),
         { images: 9, videos: 0, audios: 3 },
+        // sd-mini 的时长窗口跟分辨率走：480p 为 4-15（默认 10），720p 为 4-12（默认 5）。
+        { "480p": { min: 4, max: 15, default: 10 }, "720p": { min: 4, max: 12, default: 5 } },
     ),
 
     // ── 站点经 sora 协议上线的固定分辨率档 ──
@@ -107,12 +114,6 @@ function soraFixed(materials: VideoMaterialLimits): VideoModelCapability {
     return { payload: "sora", resolutions: null, duration: range(4, 15, 10), materials, aspectRatios: [] };
 }
 
-// sd-mini 的时长窗口跟分辨率走：480p 为 4-15（默认 10），720p 为 4-12（默认 5）。
-videoModelCapabilities["sd-mini"].durationByResolution = {
-    "480p": { min: 4, max: 15, default: 10 },
-    "720p": { min: 4, max: 12, default: 5 },
-};
-
 /** 解析模型能力；不在表内的模型返回 undefined，走通用（非门控）路径。 */
 export function resolveVideoModelCapability(model: string): VideoModelCapability | undefined {
     return videoModelCapabilities[model.trim().toLowerCase()];
@@ -121,17 +122,17 @@ export function resolveVideoModelCapability(model: string): VideoModelCapability
 /**
  * 计算实际可用的分辨率选项。
  * pricing 枚举存在时覆盖静态表；pricing schema 为空（固定分辨率模型）
- * 或无 pricing 数据且静态表为 null 时返回 null（隐藏选择器）。
+ * 返回 null（隐藏选择器）；无 pricing 数据时回退静态表。
  */
 export function effectiveResolutionOptions(capability: VideoModelCapability, pricingEnum: string[] | null | undefined): string[] | null {
-    if (Array.isArray(pricingEnum) && pricingEnum.length > 0) return pricingEnum;
-    if (pricingEnum) return null;
-    return capability.resolutions;
+    if (pricingEnum === undefined) return capability.resolutions;
+    if (pricingEnum === null) return null;
+    return pricingEnum;
 }
 
 /** 当前分辨率下的时长规格（sd-mini 这类按分辨率区分窗口的模型）。 */
 export function effectiveDurationSpec(capability: VideoModelCapability, resolution: string): VideoDurationSpec {
-    const byResolution = capability.durationByResolution?.[resolution];
+    const byResolution = resolution ? capability.durationByResolution?.[resolution.trim().toLowerCase()] : undefined;
     return byResolution ? { mode: "range", ...byResolution } : capability.duration;
 }
 

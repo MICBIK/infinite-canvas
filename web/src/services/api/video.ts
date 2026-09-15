@@ -4,7 +4,7 @@ import { nanoid } from "nanoid";
 import i18n from "@/i18n";
 import { dataUrlToFile, readFileAsDataUrl } from "@/lib/image-utils";
 import { clampVideoSeconds, computeVideoSize, inferVideoRatio } from "@/lib/media-size";
-import { clampSecondsToSpec, effectiveDurationSpec, normalizeResolutionToEnum, resolveVideoModelCapability, type VideoModelCapability } from "@/lib/video-capabilities";
+import { applyReferenceResolutionCap, clampSecondsToSpec, effectiveDurationSpec, normalizeResolutionToEnum, plainModelName, resolveVideoModelCapability, type VideoModelCapability } from "@/lib/video-capabilities";
 import { uploadMaterial } from "@/services/api/materials";
 import { fetchResolutionEnum } from "@/services/api/site-pricing";
 import { getMediaBlob, resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
@@ -182,10 +182,6 @@ async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: st
     }
 }
 
-function plainModelName(model: string) {
-    return model.includes("::") ? model.slice(model.indexOf("::") + 2) : model;
-}
-
 /**
  * 门控模型的统一提交路径：素材一律先经站点素材通道换成交互公开读 URL，
  * 再以该模型族的 JSON 负载提交（不再走 multipart/data-URI）。
@@ -195,11 +191,14 @@ async function createGatedVideoTask(config: AiConfig, model: string, capability:
     const audios = options?.audios || [];
     enforceMaterialLimits(capability, references.length, videos.length, audios.length);
 
-    const pricingEnum = await fetchResolutionEnum(config.baseUrl, config.apiKey, plainModelName(model));
+    const pricingEnum = await fetchResolutionEnum(config.baseUrl, plainModelName(model));
     const resolutionEnum = capability.resolutions === null ? null : pricingEnum ?? capability.resolutions;
-    const resolution = resolutionEnum ? normalizeResolutionToEnum(config.vquality, resolutionEnum) : null;
+    // 交叉约束在提交侧兜底：挂参考图时即使本地状态残留高档位也强制压回上限。
+    const resolutionOptions = applyReferenceResolutionCap(resolutionEnum, capability, references.length > 0);
+    const resolution = resolutionOptions ? normalizeResolutionToEnum(config.vquality, resolutionOptions) : null;
     const durationSpec = effectiveDurationSpec(capability, resolution || "");
-    const seconds = clampSecondsToSpec(durationSpec, Number(normalizeVideoSeconds(config.videoSeconds)) || durationSpec.default);
+    // 模型时长窗口优先于全局秒数下限（grok 允许 1-3 秒，全局钳制会把它抬到 4）。
+    const seconds = clampSecondsToSpec(durationSpec, Number(config.videoSeconds) || durationSpec.default);
     const ratio = videoAspectRatio(config.size);
     const aspectRatio = capability.aspectRatios.includes(ratio) ? ratio : undefined;
 
@@ -261,7 +260,8 @@ async function ensureMaterialUrlForMedia(config: AiConfig, item: { name: string;
     return result.url;
 }
 
-async function pollOpenAIVideoTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {    try {
+async function pollOpenAIVideoTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
+    try {
         const video = unwrapVideoResponse((await axios.get<ApiVideoResponse>(aiApiUrl(config, `/videos/${task.id}`), { headers: aiHeaders(config), signal: options?.signal })).data);
         const url = videoResultUrl(video);
         if (url) return { status: "completed", result: await videoResultFromUrl(url, options) };

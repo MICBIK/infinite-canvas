@@ -6,7 +6,7 @@ import i18n from "@/i18n";
 import { ImageSettingsTheme } from "@/components/image-settings-panel";
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import { clampVideoSeconds, computeVideoSize, inferVideoRatio, parseVideoResolution, readVideoDimensions, VIDEO_SECONDS_MAX, VIDEO_SECONDS_MIN, videoRatioOptions } from "@/lib/media-size";
-import { effectiveDurationSpec, type VideoModelCapability } from "@/lib/video-capabilities";
+import { effectiveDurationSpec, parseResolutionNumber, type VideoModelCapability } from "@/lib/video-capabilities";
 import { type AiConfig } from "@/stores/use-config-store";
 
 const resolutionOptions = [
@@ -54,12 +54,12 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
     };
 
     const gatedEnum = capability ? resolutionEnum ?? null : null;
-    const currentEnumValue = gatedEnum?.find((item) => parseEnumValue(item) === Number(resolution)) || null;
+    const currentEnumValue = gatedEnum?.find((item) => enumValueOf(item) === Number(resolution)) || null;
     const durationSpec = capability ? effectiveDurationSpec(capability, currentEnumValue || "") : null;
     const rangeSpec = durationSpec?.mode === "range" ? durationSpec : null;
-    const capNumber = capability?.referenceResolutionCap ? parseEnumValue(capability.referenceResolutionCap) : 0;
+    const capNumber = capability?.referenceResolutionCap ? enumValueOf(capability.referenceResolutionCap) : 0;
     const cappedEnum = capability && gatedEnum && referenceCount > 0 && capNumber > 0
-        ? gatedEnum.filter((item) => parseEnumValue(item) <= capNumber)
+        ? gatedEnum.filter((item) => enumValueOf(item) <= capNumber)
         : gatedEnum;
     const enumCapped = Boolean(cappedEnum && gatedEnum && cappedEnum.length < gatedEnum.length);
 
@@ -72,7 +72,7 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                         <SettingGroup title={t("settingsPanels.video.quality")} color={theme.node.muted}>
                             <div className="grid grid-cols-4 gap-2.5">
                                 {cappedEnum.map((item) => (
-                                    <OptionPill key={item} selected={currentEnumValue === item} theme={theme} onClick={() => selectResolution(String(parseEnumValue(item)))}>
+                                    <OptionPill key={item} selected={currentEnumValue === item} theme={theme} onClick={() => selectResolution(String(enumValueOf(item)))}>
                                         {item}
                                     </OptionPill>
                                 ))}
@@ -157,11 +157,8 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
     );
 }
 
-function parseEnumValue(value: string) {
-    const match = value.trim().match(/^(\d+)\s*p$/i);
-    if (match) return Number(match[1]);
-    if (/^4k$/i.test(value.trim())) return 2160;
-    return 0;
+function enumValueOf(value: string) {
+    return parseResolutionNumber(value) ?? 0;
 }
 
 export function videoResolutionLabel(value: string) {

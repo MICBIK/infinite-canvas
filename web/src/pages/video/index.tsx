@@ -12,7 +12,7 @@ import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { VideoSettingsPanel, normalizeVideoResolutionValue, normalizeVideoSizeValue, videoModeLabel, videoSizeLabel } from "@/components/video-settings-panel";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { clampVideoSeconds } from "@/lib/media-size";
-import { effectiveResolutionOptions, resolveVideoModelCapability } from "@/lib/video-capabilities";
+import { effectiveResolutionOptions, plainModelName, resolveVideoModelCapability } from "@/lib/video-capabilities";
 import { formatBytes, formatDuration } from "@/lib/image-utils";
 import { deleteStoredMedia, resolveMediaUrl } from "@/services/file-storage";
 import { resolveImageUrl, uploadImage } from "@/services/image-storage";
@@ -105,7 +105,7 @@ export default function VideoPage() {
     const agentTaskIdRef = useRef<string | undefined>(undefined);
 
     const model = effectiveConfig.videoModel || effectiveConfig.model;
-    const modelCapability = resolveVideoModelCapability(model.includes("::") ? model.slice(model.indexOf("::") + 2) : model);
+    const modelCapability = resolveVideoModelCapability(plainModelName(model));
     const canGenerate = Boolean(prompt.trim());
 
     // 门控模型：参考图经站点素材通道直传换成交互公开读 URL，失败可重试。
@@ -286,7 +286,9 @@ export default function VideoPage() {
             setPrompt(payload.content);
         } else if (payload.kind === "image") {
             const stored = await uploadImage(payload.dataUrl);
-            setReferences((value) => [...value, { id: nanoid(), name: payload.title, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey }].slice(0, 7));
+            const inserted = [{ id: nanoid(), name: payload.title, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey }];
+            setReferences((value) => [...value, ...inserted].slice(0, 7));
+            queueMaterialUploads(inserted);
         }
         setAssetPickerOpen(false);
     };
@@ -553,7 +555,7 @@ export default function VideoPage() {
 function GenerationSettings({ config, model, updateConfig, openConfigDialog, referenceCount }: { config: AiConfig; model: string; updateConfig: UpdateAiConfig; openConfigDialog: (shouldPromptContinue?: boolean) => void; referenceCount: number }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
-    const plainModel = model.includes("::") ? model.slice(model.indexOf("::") + 2) : model;
+    const plainModel = plainModelName(model);
     const capability = resolveVideoModelCapability(plainModel);
     const [pricingEnum, setPricingEnum] = useState<string[] | null | undefined>(undefined);
 
@@ -561,7 +563,7 @@ function GenerationSettings({ config, model, updateConfig, openConfigDialog, ref
         if (!capability) return;
         let alive = true;
         const requestConfig = resolveModelRequestConfig(config, model);
-        void fetchResolutionEnum(requestConfig.baseUrl, requestConfig.apiKey, plainModel).then((result) => {
+        void fetchResolutionEnum(requestConfig.baseUrl, plainModel).then((result) => {
             if (alive) setPricingEnum(result);
         });
         return () => {
