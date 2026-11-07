@@ -1,5 +1,5 @@
 import { ArrowLeft, ArrowRight, BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, LoaderCircle, Plus, SlidersHorizontal, Sparkles, Trash2, Upload, VideoIcon } from "lucide-react";
-import { useEffect, useRef, useState, type DragEvent } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type DragEvent } from "react";
 import { App, Button, Checkbox, Drawer, Empty, Input, Modal, Tag, Typography } from "antd";
 import localforage from "localforage";
 import { nanoid } from "nanoid";
@@ -15,7 +15,7 @@ import { clampVideoSeconds } from "@/lib/media-size";
 import { effectiveResolutionOptions, plainModelName, resolveVideoModelCapability } from "@/lib/video-capabilities";
 import { formatBytes, formatDuration } from "@/lib/image-utils";
 import { deleteStoredMedia, resolveMediaUrl } from "@/services/file-storage";
-import { resolveImageUrl, uploadImage } from "@/services/image-storage";
+import { resolveImageUrl, ensureImagePreview, getImagePreviewRevision, previewUrlFor, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
 import { uploadMaterial } from "@/services/api/materials";
 import { fetchResolutionEnum } from "@/services/api/site-pricing";
 import { createVideoGenerationTask, pollVideoGenerationTask, storeGeneratedVideo, type VideoGenerationTask } from "@/services/api/video";
@@ -73,6 +73,7 @@ const logStore = localforage.createInstance({ name: "infinite-canvas", storeName
 export default function VideoPage() {
     const { message } = App.useApp();
     const { t } = useTranslation();
+    useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const dragDepthRef = useRef(0);
     const activeLogIdsRef = useRef<Set<string>>(new Set());
@@ -458,7 +459,7 @@ export default function VideoPage() {
                                 >
                                     {references.map((item, index) => (
                                         <div key={item.id} className="group relative size-20 shrink-0 overflow-hidden rounded-md border border-stone-200 dark:border-stone-800">
-                                            <img src={item.dataUrl} alt={item.name} className="size-full object-cover" />
+                                            <img src={previewUrlFor(item.storageKey) || item.dataUrl} alt={item.name} className="size-full object-cover" />
                                             {item.upload && item.upload.state !== "ready" ? (
                                                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-black/55 text-[10px] font-medium text-white">
                                                     {item.upload.state === "uploading" ? (
@@ -734,10 +735,10 @@ async function readStoredLogs() {
 async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog> {
     const video = log.video?.storageKey ? { ...log.video, url: await resolveMediaUrl(log.video.storageKey, log.video.url) } : log.video;
     const references = await Promise.all(
-        (log.references || []).map(async (item) => ({
-            ...item,
-            dataUrl: await resolveImageUrl(item.storageKey, item.dataUrl),
-        })),
+        (log.references || []).map(async (item) => {
+            void ensureImagePreview(item.storageKey);
+            return { ...item, dataUrl: await resolveImageUrl(item.storageKey, item.dataUrl) };
+        }),
     );
     const config = normalizeLogConfig(log);
     return {
